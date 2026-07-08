@@ -2,7 +2,7 @@ name: Build EXE
 
 on:
   push:
-    branches: [ main, master ] # Сработает сразу, как только ты нажмешь сохранить!
+    branches: [ main, master ]
 
 jobs:
   build:
@@ -15,9 +15,9 @@ jobs:
     - name: Install
       run: pip install customtkinter matplotlib pyserial pyinstaller
     - name: Compile
-      run: pyinstaller --noconsole --onefile main_app.py
+      run: pyinstaller --noconsole --onefile main.py
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
         name: Windows_App_EXE
-        path: dist/main_app.exe
+        path: dist/main_py.exe
