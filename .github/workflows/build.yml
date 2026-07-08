@@ -20,4 +20,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: Windows_App_EXE
-        path: dist/main_py.exe
+        path: dist/main.exe
