@@ -266,13 +266,21 @@ class App(ctk.CTk):
         if "status" in obj:
             status = obj["status"]
             reason = obj.get("reason", "")
+            self.log(f"Статус: {status}" + (f" ({reason})" if reason else ""))
+
+            if status == "BOOT_OK":
+                self.label_status.configure(text="Прошивка загрузилась, готова к работе", text_color="lightgreen")
+                return
+            if status == "WARN":
+                # информационное предупреждение — не завершает и не прерывает тест
+                return
+
             if status == "DONE":
                 self.label_status.configure(text="Тест успешно завершён", text_color="lightgreen")
             elif status == "STOPPED":
                 self.label_status.configure(text="Остановлено пользователем", text_color="orange")
             elif status == "SAFETY_CUTOFF":
                 self.label_status.configure(text=f"Защита сработала: {reason}", text_color="red")
-            self.log(f"Статус: {status}" + (f" ({reason})" if reason else ""))
             self.is_running = False
             self.btn_start.configure(state="normal")
             self.btn_stop.configure(state="disabled")
