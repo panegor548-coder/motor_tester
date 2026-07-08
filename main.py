@@ -58,6 +58,7 @@ class App(ctk.CTk):
         self.reader_thread = None
         self.stop_reader = threading.Event()
         self.rx_queue = queue.Queue()
+        self.tx_queue = queue.Queue()
         self.is_running = False
 
         self.data = {"t": [], "pwm": [], "throttle_pct": [], "rpm": [],
@@ -170,21 +171,32 @@ class App(ctk.CTk):
             time.sleep(2)  # ESP32 обычно перезагружается при открытии порта
             self.serial_port = sp
             self.stop_reader.clear()
-            self.reader_thread = threading.Thread(target=self._read_loop, daemon=True)
+            self.reader_thread = threading.Thread(target=self._io_loop, daemon=True)
             self.reader_thread.start()
             self.rx_queue.put(json.dumps({"__connected__": True, "port": port}))
         except Exception as e:
             self.rx_queue.put(json.dumps({"__connect_error__": str(e)}))
 
-    def _read_loop(self):
-        # Работает в фоновом потоке — ТОЛЬКО читает и кладёт в очередь,
-        # никакого обращения к GUI/matplotlib отсюда.
+    def _io_loop(self):
+        # ЕДИНСТВЕННОЕ место, где кто-либо трогает self.serial_port.
+        # И чтение, и запись — из одного потока, никогда из главного.
+        # Главный поток только кладёт команды в self.tx_queue.
         while not self.stop_reader.is_set():
+            try:
+                while True:
+                    cmd = self.tx_queue.get_nowait()
+                    self.serial_port.write(cmd)
+            except queue.Empty:
+                pass
+            except Exception as e:
+                self.rx_queue.put(json.dumps({"__io_error__": f"запись: {e}"}))
+
             try:
                 line = self.serial_port.readline().decode("utf-8", errors="ignore").strip()
                 if line:
                     self.rx_queue.put(line)
-            except Exception:
+            except Exception as e:
+                self.rx_queue.put(json.dumps({"__io_error__": f"чтение: {e}"}))
                 break
 
     def _poll_queue(self):
@@ -213,11 +225,7 @@ class App(ctk.CTk):
         for k in self.data:
             self.data[k].clear()
         self.btn_csv.configure(state="disabled")
-        try:
-            self.serial_port.write(b"START\n")
-        except Exception as e:
-            self.log(f"Ошибка отправки START: {e}")
-            return
+        self.tx_queue.put(b"START\n")
         self.is_running = True
         self.label_status.configure(text="Идёт автоматический тест...", text_color="yellow")
         self.log("Отправлена команда START")
@@ -226,7 +234,7 @@ class App(ctk.CTk):
 
     def emergency_stop(self):
         if self.serial_port:
-            self.serial_port.write(b"STOP\n")
+            self.tx_queue.put(b"STOP\n")
         self.is_running = False
         self.label_status.configure(text="ТЕСТ ПРИНУДИТЕЛЬНО ПРЕРВАН", text_color="red")
         self.btn_start.configure(state="normal")
@@ -249,6 +257,10 @@ class App(ctk.CTk):
             self.label_status.configure(text=f"Ошибка подключения: {obj['__connect_error__']}", text_color="red")
             self.btn_connect.configure(state="normal")
             self.log(f"Ошибка подключения: {obj['__connect_error__']}")
+            return
+
+        if "__io_error__" in obj:
+            self.log(f"Ошибка порта: {obj['__io_error__']}")
             return
 
         if "status" in obj:
