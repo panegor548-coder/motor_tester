@@ -1,10 +1,10 @@
 """
 Motor Test Stand — настольное приложение (Windows .exe через PyInstaller)
 ============================================================================
-Исправлено: 
-1. Разгон мотора сделан МАКСИМАЛЬНО плавным (шаг ШИМ = 1 каждые 300 мс).
-2. Добавлен счетчик шагов для прореживания точек на графике (раз в 10 шагов).
-3. Полностью решена проблема ухода БП в защиту при старте теста.
+Исправлено:
+1. Сохранение CSV теперь открывает диалоговое окно Windows (выбор любой папки).
+2. Разгон мотора остался сверхплавным (шаг ШИМ = 1 каждые 300 мс).
+3. Добавлен счетчик шагов для прореживания точек на графике (раз в 10 шагов).
 """
 
 import sys
@@ -25,6 +25,7 @@ if sys.stderr is None:
 import customtkinter as ctk
 import serial
 import serial.tools.list_ports
+from tkinter import filedialog  # Добавлено для вызова окна сохранения файла
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
@@ -111,7 +112,7 @@ class App(ctk.CTk):
                                       command=self.emergency_stop, state="disabled")
         self.btn_stop.pack(side="left", expand=True, fill="x", padx=(8, 0))
 
-        self.btn_csv = ctk.CTkButton(self, text="Скачать CSV", command=self.export_csv,
+        self.btn_csv = ctk.CTkButton(self, text="Сохранить CSV как...", command=self.export_csv,
                                      state="disabled")
         self.btn_csv.pack(pady=(0, 8))
 
@@ -347,14 +348,38 @@ class App(ctk.CTk):
     def export_csv(self):
         if not self.data["t"]:
             return
-        filename = f"motor_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        keys = list(self.data.keys())
-        with open(filename, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(keys)
-            for i in range(len(self.data["t"])):
-                writer.writerow([self.data[k][i] for k in keys])
-        self.label_status.configure(text=f"Сохранено: {filename}", text_color="lightgreen")
+            
+        # Генерация базового имени файла по умолчанию
+        default_filename = f"motor_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        
+        # Вызов системного окна "Сохранить как..."
+        filepath = filedialog.asksaveasfilename(
+            initialfile=default_filename,
+            defaultextension=".csv",
+            filetypes=[("CSV файлы", "*.csv"), ("Все файлы", "*.*")],
+            title="Выберите папку для сохранения результатов теста"
+        )
+        
+        # Если пользователь нажал "Отмена", то filepath будет пустым строковым значением
+        if not filepath:
+            self.log("Сохранение отменено пользователем")
+            return
+            
+        try:
+            keys = list(self.data.keys())
+            with open(filepath, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(keys)
+                for i in range(len(self.data["t"])):
+                    writer.writerow([self.data[k][i] for k in keys])
+            
+            # Показываем только короткое имя файла на статус-панели для красоты
+            just_name = os.path.basename(filepath)
+            self.label_status.configure(text=f"Сохранено: {just_name}", text_color="lightgreen")
+            self.log(f"Файл успешно сохранен в: {filepath}")
+        except Exception as e:
+            self.log(f"Ошибка записи файла: {e}")
+            self.label_status.configure(text="Ошибка при сохранении файла!", text_color="red")
 
 
 if __name__ == "__main__":
