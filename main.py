@@ -2,8 +2,8 @@
 Motor Test Stand — настольное приложение (Windows .exe через PyInstaller)
 ============================================================================
 Исправлено:
-1. Сохранение CSV теперь открывает диалоговое окно Windows (выбор любой папки).
-2. Разгон мотора остался сверхплавным (шаг ШИМ = 1 каждые 300 мс).
+1. Добавлен ползунок (Slider) для плавной настройки скорости/шага разгона мотора.
+2. Сохранение CSV открывает диалоговое окно Windows (выбор любой папки).
 3. Добавлен счетчик шагов для прореживания точек на графике (раз в 10 шагов).
 """
 
@@ -25,7 +25,7 @@ if sys.stderr is None:
 import customtkinter as ctk
 import serial
 import serial.tools.list_ports
-from tkinter import filedialog  # Добавлено для вызова окна сохранения файла
+from tkinter import filedialog
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
@@ -39,7 +39,7 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Стенд тестирования моторов")
-        self.geometry("900x650")
+        self.geometry("900x720")  # Слегка увеличили высоту для ползунка
 
         self.serial_port = None
         self.reader_thread = None
@@ -48,11 +48,12 @@ class App(ctk.CTk):
         self.tx_queue = queue.Queue()
         self.is_running = False
 
-        # Переменные для сверхплавного разгона на стороне ПК
+        # Переменные для разгона
         self.current_pwm = 1000
         self.current_pct = 0
-        self.step_counter = 0  # Счетчик для прореживания графика (шаг 10)
+        self.step_counter = 0
         self.test_thread = None
+        self.ramp_delay = 0.3  # Значение задержки по умолчанию (300 мс)
 
         self.data = {"t": [], "pwm": [], "throttle_pct": [], "rpm": [],
                      "voltage": [], "current_a": [], "thrust": []}
@@ -62,6 +63,7 @@ class App(ctk.CTk):
         self.after(50, self._poll_queue)
 
     def _build_ui(self):
+        # Панель подключения
         top = ctk.CTkFrame(self)
         top.pack(fill="x", padx=16, pady=(16, 8))
 
@@ -79,10 +81,25 @@ class App(ctk.CTk):
                                          font=ctk.CTkFont(size=14, weight="bold"))
         self.label_status.pack(pady=(4, 8))
 
+        # --- НАСТРОЙКА ПЛАВНОСТИ (ПОЛЗУНОК) ---
+        slider_frame = ctk.CTkFrame(self)
+        slider_frame.pack(fill="x", padx=16, pady=4)
+        
+        self.label_slider_title = ctk.CTkLabel(slider_frame, text="Задержка шага разгона: 300 мс (Очень плавно)", 
+                                               font=ctk.CTkFont(size=12))
+        self.label_slider_title.pack(pady=(4, 0))
+        
+        self.speed_slider = ctk.CTkSlider(slider_frame, from_=50, to=1000, number_of_steps=19,
+                                          command=self._on_slider_move)
+        self.speed_slider.set(300)  # Ставим ползунок на 300 мс по умолчанию
+        self.speed_slider.pack(fill="x", padx=20, pady=(0, 6))
+        # --------------------------------------
+
         self.label_throttle = ctk.CTkLabel(self, text="Газ: 0% (PWM: — мкс)",
                                            font=ctk.CTkFont(size=30, weight="bold"))
         self.label_throttle.pack(pady=4)
 
+        # Панель приборов
         stats = ctk.CTkFrame(self)
         stats.pack(fill="x", padx=16, pady=8)
         self.stat_labels = {}
@@ -98,6 +115,7 @@ class App(ctk.CTk):
             val.pack(pady=(0, 6))
             self.stat_labels[key] = val
 
+        # Управление тестом
         btns = ctk.CTkFrame(self)
         btns.pack(fill="x", padx=16, pady=8)
         self.btn_start = ctk.CTkButton(btns, text="НАЧАТЬ ИСПЫТАНИЯ", fg_color="green",
@@ -116,7 +134,8 @@ class App(ctk.CTk):
                                      state="disabled")
         self.btn_csv.pack(pady=(0, 8))
 
-        self.fig = Figure(figsize=(8, 5), dpi=100, facecolor="#1e1e1e")
+        # Графики
+        self.fig = Figure(figsize=(8, 4.5), dpi=100, facecolor="#1e1e1e")
         self.axs = self.fig.subplots(2, 2)
         for ax in self.axs.flat:
             ax.set_facecolor("#1e1e1e")
@@ -126,9 +145,25 @@ class App(ctk.CTk):
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=16, pady=(0, 8))
 
-        self.log_box = ctk.CTkTextbox(self, height=90, font=ctk.CTkFont(size=11))
+        # Терминал логов
+        self.log_box = ctk.CTkTextbox(self, height=80, font=ctk.CTkFont(size=11))
         self.log_box.pack(fill="x", padx=16, pady=(0, 16))
         self.log_box.configure(state="disabled")
+
+    def _on_slider_move(self, value):
+        """Вызывается при передвижении ползунка пользователем"""
+        ms_val = int(value)
+        self.ramp_delay = ms_val / 1000.0  # Переводим миллисекунды в секунды для time.sleep()
+        
+        # Подсказки для удобства
+        if ms_val <= 100:
+            desc = "(Быстро)"
+        elif ms_val <= 400:
+            desc = "(Очень плавно)"
+        else:
+            desc = "(Экстремально медленно)"
+            
+        self.label_slider_title.configure(text=f"Задержка шага разгона: {ms_val} мс {desc}")
 
     def log(self, msg):
         self.log_box.configure(state="normal")
@@ -152,7 +187,7 @@ class App(ctk.CTk):
     def connect(self):
         port = self.port_combo.get()
         if not port:
-            self.label_status.configure(text="Выбери порт", text_color="orange")
+            self.label_status.configure(text="Выбери港", text_color="orange")
             return
         self.btn_connect.configure(state="disabled")
         self.label_status.configure(text=f"Подключение к {port}...", text_color="orange")
@@ -217,8 +252,11 @@ class App(ctk.CTk):
         self.current_pct = 0
         self.step_counter = 0
         
-        self.label_status.configure(text="Идёт сверхплавный автоматический тест...", text_color="yellow")
-        self.log("Запуск сверхплавного теста (Шаг ШИМ = 1, Пауза = 300 мс)")
+        # Блокируем ползунок во время проведения теста, чтобы случайно не сбить шаг
+        self.speed_slider.configure(state="disabled")
+        
+        self.label_status.configure(text="Идёт автоматический тест...", text_color="yellow")
+        self.log(f"Запуск плавного теста. Шаг = 1 единице ШИМ каждые {int(self.ramp_delay * 1000)} мс")
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         
@@ -226,11 +264,11 @@ class App(ctk.CTk):
         self.test_thread.start()
 
     def _smooth_ramp_worker(self):
-        """Поток, который очень медленно и плавно шагает по 1 единице ШИМ каждые 300 мс"""
+        """Поток динамически использует задержку, заданную ползунком"""
         self.tx_queue.put(b"START\n")
         
         while self.is_running and self.current_pwm < 2000:
-            time.sleep(0.3)  # Сверхплавная задержка 300 мс
+            time.sleep(self.ramp_delay)  # Используется значение из ползунка
             if not self.is_running:
                 break
                 
@@ -238,7 +276,6 @@ class App(ctk.CTk):
             self.current_pct = int((self.current_pwm - 1000) / 10)
             self.step_counter += 1
             
-            # Отправляем текущую точную команду ШИМ в ESP32
             cmd_str = f"PWM:{self.current_pwm}\n".encode()
             self.tx_queue.put(cmd_str)
             
@@ -254,6 +291,7 @@ class App(ctk.CTk):
         self.label_status.configure(text="ТЕСТ ПРИНУДИТЕЛЬНО ПРЕРВАН", text_color="red")
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
+        self.speed_slider.configure(state="normal")  # Разблокируем ползунок
 
     def _handle_line(self, line):
         try:
@@ -299,15 +337,14 @@ class App(ctk.CTk):
             self.is_running = False
             self.btn_start.configure(state="normal")
             self.btn_stop.configure(state="disabled")
+            self.speed_slider.configure(state="normal")  # Разблокируем ползунок
             if self.data["t"]:
                 self.btn_csv.configure(state="normal")
             return
 
-        # Синхронизируем полученные значения с рассчитанным плавным разгоном
         obj['pwm'] = self.current_pwm
         obj['throttle_pct'] = self.current_pct
 
-        # Добавляем данные в массивы графиков строго на каждом 10-м шаге
         if self.step_counter >= 10 or not self.is_running:
             for k in self.data:
                 if k in obj:
@@ -315,7 +352,6 @@ class App(ctk.CTk):
             self.step_counter = 0
             self._update_chart()
 
-        # Текстовые индикаторы обновляем всегда без задержек (шаг 1)
         self.label_throttle.configure(
             text=f"Газ: {self.current_pct}% (PWM: {self.current_pwm} мкс)"
         )
@@ -349,10 +385,8 @@ class App(ctk.CTk):
         if not self.data["t"]:
             return
             
-        # Генерация базового имени файла по умолчанию
         default_filename = f"motor_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
-        # Вызов системного окна "Сохранить как..."
         filepath = filedialog.asksaveasfilename(
             initialfile=default_filename,
             defaultextension=".csv",
@@ -360,7 +394,6 @@ class App(ctk.CTk):
             title="Выберите папку для сохранения результатов теста"
         )
         
-        # Если пользователь нажал "Отмена", то filepath будет пустым строковым значением
         if not filepath:
             self.log("Сохранение отменено пользователем")
             return
@@ -373,7 +406,6 @@ class App(ctk.CTk):
                 for i in range(len(self.data["t"])):
                     writer.writerow([self.data[k][i] for k in keys])
             
-            # Показываем только короткое имя файла на статус-панели для красоты
             just_name = os.path.basename(filepath)
             self.label_status.configure(text=f"Сохранено: {just_name}", text_color="lightgreen")
             self.log(f"Файл успешно сохранен в: {filepath}")
