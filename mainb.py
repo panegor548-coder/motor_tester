@@ -272,7 +272,7 @@ class App(ctk.CTk):
             if not self.is_running:
                 break
                 
-            self.current_pwm += 1
+            self.current_pwm += 20
             self.current_pct = int((self.current_pwm - 1000) / 10)
             self.step_counter += 1
             
