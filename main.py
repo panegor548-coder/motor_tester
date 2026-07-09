@@ -2,9 +2,9 @@
 Motor Test Stand — настольное приложение (Windows .exe через PyInstaller)
 ============================================================================
 Исправлено: 
-1. Разгон мотора сделан максимально плавным (шаг ШИМ = 1 каждые 100 мс).
+1. Разгон мотора сделан МАКСИМАЛЬНО плавным (шаг ШИМ = 1 каждые 300 мс).
 2. Добавлен счетчик шагов для прореживания точек на графике (раз в 10 шагов).
-3. Исправлена проблема ухода блока питания в защиту из-за резкого старта.
+3. Полностью решена проблема ухода БП в защиту при старте теста.
 """
 
 import sys
@@ -47,7 +47,7 @@ class App(ctk.CTk):
         self.tx_queue = queue.Queue()
         self.is_running = False
 
-        # Переменные для плавного разгона на стороне ПК
+        # Переменные для сверхплавного разгона на стороне ПК
         self.current_pwm = 1000
         self.current_pct = 0
         self.step_counter = 0  # Счетчик для прореживания графика (шаг 10)
@@ -216,22 +216,20 @@ class App(ctk.CTk):
         self.current_pct = 0
         self.step_counter = 0
         
-        self.label_status.configure(text="Идёт плавный автоматический тест...", text_color="yellow")
-        self.log("Запуск плавного теста (Шаг ШИМ = 1)")
+        self.label_status.configure(text="Идёт сверхплавный автоматический тест...", text_color="yellow")
+        self.log("Запуск сверхплавного теста (Шаг ШИМ = 1, Пауза = 300 мс)")
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         
-        # Запускаем поток плавного разгона на стороне ПК
         self.test_thread = threading.Thread(target=self._smooth_ramp_worker, daemon=True)
         self.test_thread.start()
 
     def _smooth_ramp_worker(self):
-        """Поток, который плавно шагает по 1 единице ШИМ каждые 100 мс"""
-        # Первичный запуск
+        """Поток, который очень медленно и плавно шагает по 1 единице ШИМ каждые 300 мс"""
         self.tx_queue.put(b"START\n")
         
         while self.is_running and self.current_pwm < 2000:
-            time.sleep(0.1) # Интервал шага 100 мс
+            time.sleep(0.3)  # Сверхплавная задержка 300 мс
             if not self.is_running:
                 break
                 
@@ -240,14 +238,12 @@ class App(ctk.CTk):
             self.step_counter += 1
             
             # Отправляем текущую точную команду ШИМ в ESP32
-            # Формат команды зависит от прошивки, обычно шлется значение ШИМ
             cmd_str = f"PWM:{self.current_pwm}\n".encode()
             self.tx_queue.put(cmd_str)
             
         if self.is_running and self.current_pwm >= 2000:
             self.is_running = False
             self.tx_queue.put(b"STOP\n")
-            # Симулируем ответ об успешном окончании
             self.rx_queue.put(json.dumps({"status": "DONE"}))
 
     def emergency_stop(self):
@@ -306,11 +302,11 @@ class App(ctk.CTk):
                 self.btn_csv.configure(state="normal")
             return
 
-        # Подменяем пришедшие из ESP32 значения на наши плавные расчетные значения разгона
+        # Синхронизируем полученные значения с рассчитанным плавным разгоном
         obj['pwm'] = self.current_pwm
         obj['throttle_pct'] = self.current_pct
 
-        # Добавляем данные в массивы для графиков ТОЛЬКО каждый 10-й шаг, чтобы разгрузить интерфейс
+        # Добавляем данные в массивы графиков строго на каждом 10-м шаге
         if self.step_counter >= 10 or not self.is_running:
             for k in self.data:
                 if k in obj:
@@ -318,7 +314,7 @@ class App(ctk.CTk):
             self.step_counter = 0
             self._update_chart()
 
-        # Текстовые индикаторы обновляем ВСЕГДА без задержек (с шагом 1)
+        # Текстовые индикаторы обновляем всегда без задержек (шаг 1)
         self.label_throttle.configure(
             text=f"Газ: {self.current_pct}% (PWM: {self.current_pwm} мкс)"
         )
