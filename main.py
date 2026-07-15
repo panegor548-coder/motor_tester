@@ -30,7 +30,7 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Стенд тестирования моторов")
-        self.geometry("950x720")  # Слегка увеличили ширину, чтобы 5 датчиков встали красиво в ряд
+        self.geometry("1100x720")  # Увеличили ширину, чтобы 6 датчиков красиво встали в ряд
 
         self.serial_port = None
         self.reader_thread = None
@@ -49,9 +49,9 @@ class App(ctk.CTk):
         self.delayed_start_pending = False
         self.delayed_start_after_id = None
 
-        # Добавлено поле "temp" для записи температуры в историю и сохранения в CSV
+        # Добавлено поле "power" для расчета и записи мощности в историю и сохранения в CSV
         self.data = {"t": [], "pwm": [], "throttle_pct": [], "rpm": [],
-                     "voltage": [], "current_a": [], "thrust": [], "temp": []}
+                     "voltage": [], "current_a": [], "power": [], "thrust": [], "temp": []}
 
         self._build_ui()
         self._refresh_ports()
@@ -96,16 +96,16 @@ class App(ctk.CTk):
                                            font=ctk.CTkFont(size=30, weight="bold"))
         self.label_throttle.pack(pady=4)
 
-        # Панель приборов (Добавлен датчик "temp" для отображения температуры в °C)
+        # Панель приборов (Добавлен датчик "power" для отображения мощности в Вт)
         stats = ctk.CTkFrame(self)
         stats.pack(fill="x", padx=16, pady=8)
         self.stat_labels = {}
         for i, (key, title) in enumerate([
             ("rpm", "RPM"), ("voltage", "Вольты (В)"),
-            ("current_a", "Ампер (А)"), ("temp", "Темп. (°C)"), ("thrust", "Тяга")
+            ("current_a", "Ампер (А)"), ("power", "Мощность (Вт)"), ("temp", "Темп. (°C)"), ("thrust", "Тяга")
         ]):
             f = ctk.CTkFrame(stats)
-            f.grid(row=0, column=i, padx=8, pady=8, sticky="nsew")
+            f.grid(row=0, column=i, padx=6, pady=8, sticky="nsew")
             stats.grid_columnconfigure(i, weight=1)
             ctk.CTkLabel(f, text=title, font=ctk.CTkFont(size=11)).pack(pady=(6, 0))
             val = ctk.CTkLabel(f, text="0", font=ctk.CTkFont(size=20, weight="bold"))
@@ -127,7 +127,7 @@ class App(ctk.CTk):
                                       command=self.emergency_stop, state="disabled")
         self.btn_stop.pack(side="left", expand=True, fill="x", padx=(8, 0))
 
-        # --- ОТЛОЖЕННЫЙ СТАРТ (ползунок задержки + отдельная кнопка) ---
+        # --- ОТЛОЖЕННЫЙ СТАРТ ---
         delayed_frame = ctk.CTkFrame(self)
         delayed_frame.pack(fill="x", padx=16, pady=(0, 8))
 
@@ -168,11 +168,9 @@ class App(ctk.CTk):
         self.log_box.configure(state="disabled")
 
     def _on_slider_move(self, value):
-        """Вызывается при передвижении ползунка пользователем"""
         ms_val = int(value)
-        self.ramp_delay = ms_val / 1000.0  # Переводим миллисекунды в секунды для time.sleep()
+        self.ramp_delay = ms_val / 1000.0
 
-        # Подсказки для удобства
         if ms_val <= 100:
             desc = "(Быстро)"
         elif ms_val <= 400:
@@ -183,7 +181,6 @@ class App(ctk.CTk):
         self.label_slider_title.configure(text=f"Задержка шага разгона: {ms_val} мс {desc}")
 
     def _on_delayed_slider_move(self, value):
-        """Обновляет подпись под ползунком отложенного старта (1-60 с)."""
         sec_val = int(round(value))
         self.label_delayed_slider.configure(text=f"Задержка старта: {sec_val} с")
 
@@ -274,7 +271,6 @@ class App(ctk.CTk):
         self.current_pct = 0
         self.step_counter = 0
 
-        # Блокируем ползунок во время проведения теста, чтобы случайно не сбить шаг
         self.speed_slider.configure(state="disabled")
         self.delayed_slider.configure(state="disabled")
         self.btn_delayed_start.configure(state="disabled")
@@ -289,9 +285,6 @@ class App(ctk.CTk):
         self.test_thread.start()
 
     def start_delayed_test(self):
-        """Запускает обратный отсчёт с ползунка (1-60 с), по истечении
-        которого стартует обычный start_test(). Саму кнопку "НАЧАТЬ
-        ИСПЫТАНИЯ" не трогает — это отдельный, независимый путь запуска."""
         if self.is_running or self.delayed_start_pending or not self.serial_port:
             return
 
@@ -302,9 +295,6 @@ class App(ctk.CTk):
         self.btn_delayed_start.configure(state="disabled")
         self.delayed_slider.configure(state="disabled")
         self.speed_slider.configure(state="disabled")
-        # Пока идёт отсчёт, мотор ещё не запущен и STOP слать некому,
-        # но кнопку аварийного стопа держим активной, чтобы отсчёт
-        # можно было отменить.
         self.btn_stop.configure(state="normal")
 
         self.log(f"Отложенный старт: тест начнётся через {delay_sec} с")
@@ -312,7 +302,7 @@ class App(ctk.CTk):
 
     def _delayed_start_tick(self, remaining):
         if not self.delayed_start_pending:
-            return  # отменили (например, аварийным стопом) — просто выходим
+            return
 
         if remaining <= 0:
             self.delayed_start_pending = False
@@ -324,8 +314,6 @@ class App(ctk.CTk):
         self.delayed_start_after_id = self.after(1000, lambda: self._delayed_start_tick(remaining - 1))
 
     def _cancel_delayed_start(self):
-        """Отменяет ожидающий отложенный старт (если он есть) и возвращает
-        элементы управления в исходное состояние."""
         if not self.delayed_start_pending:
             return False
         self.delayed_start_pending = False
@@ -344,12 +332,6 @@ class App(ctk.CTk):
         return True
 
     def _smooth_ramp_worker(self):
-        """Поток: сначала армирует ESC на минимальном газу, затем плавно разгоняет
-        мотор шагом 1 мкс ШИМ, используя задержку, заданную ползунком."""
-
-        # 1) Армирование: держим ESC на минимальном ШИМ (1000) некоторое время.
-        #    Без этой паузы ESC получает мгновенный скачок команд сразу после
-        #    подачи питания/START, из-за чего бросок пускового тока сбивает защиту БП.
         self.tx_queue.put(b"START\n")
         self.tx_queue.put(f"PWM:{self.current_pwm}\n".encode())
         self.rx_queue.put(json.dumps({"status": "ARMING"}))
@@ -363,12 +345,6 @@ class App(ctk.CTk):
 
         self.rx_queue.put(json.dumps({"status": "RAMPING"}))
 
-        # 2) Равномерный разгон шагом 1 мкс ШИМ с задержкой из ползунка.
-        #    Прогрессивная (экспоненциальная) кривая была убрана: на её
-        #    последних, более крупных скачках PWM тахометр/телеметрия RPM
-        #    не успевали "досчитать" обороты между соседними точками —
-        #    линейный шаг 1 даёт равномерный, предсказуемый интервал между
-        #    соседними значениями PWM, с которым телеметрия справляется.
         while self.is_running and self.current_pwm < 2000:
             time.sleep(self.ramp_delay)
             if not self.is_running:
@@ -388,7 +364,7 @@ class App(ctk.CTk):
 
     def emergency_stop(self):
         if self._cancel_delayed_start():
-            return  # шёл только отсчёт, мотор ещё не запускался — нечего останавливать
+            return
 
         self.is_running = False
         if self.serial_port:
@@ -396,7 +372,7 @@ class App(ctk.CTk):
         self.label_status.configure(text="ТЕСТ ПРИНУДИТЕЛЬНО ПРЕРВАН", text_color="red")
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
-        self.speed_slider.configure(state="normal")  # Разблокируем ползунок
+        self.speed_slider.configure(state="normal")
         self.delayed_slider.configure(state="normal")
         self.btn_delayed_start.configure(state="normal")
 
@@ -451,20 +427,27 @@ class App(ctk.CTk):
             self.is_running = False
             self.btn_start.configure(state="normal")
             self.btn_stop.configure(state="disabled")
-            self.speed_slider.configure(state="normal")  # Разблокируем ползунок
+            self.speed_slider.configure(state="normal")
             self.delayed_slider.configure(state="normal")
             self.btn_delayed_start.configure(state="normal")
             if self.data["t"]:
                 self.btn_csv.configure(state="normal")
             return
 
+        # Расчитываем электрическую мощность на лету (P = U * I)
+        if "voltage" in obj and "current_a" in obj:
+            u = obj["voltage"]
+            i = obj["current_a"]
+            if isinstance(u, (int, float)) and isinstance(i, (int, float)):
+                obj["power"] = u * i
+            else:
+                obj["power"] = 0.0
+        else:
+            obj["power"] = 0.0
+
         obj['pwm'] = self.current_pwm
         obj['throttle_pct'] = self.current_pct
 
-        # Порог логирования на график: раз в 10 шагов PWM. Актуально снова,
-        # т.к. вернулся линейный шаг 1 мкс (1000 шагов на весь диапазон,
-        # а не ~120 точек прогрессивной кривой) — иначе точек было бы
-        # слишком много для графика.
         if self.step_counter >= 10 or not self.is_running:
             for k in self.data:
                 if k in obj:
@@ -478,8 +461,13 @@ class App(ctk.CTk):
         for k, lbl in self.stat_labels.items():
             if k in obj:
                 val = obj[k]
-                if k in ("voltage", "current_a", "temp") and isinstance(val, (int, float)):
-                    lbl.configure(text=f"{val:.2f}" if k != "temp" else f"{val:.1f}")
+                if k in ("voltage", "current_a", "power", "temp") and isinstance(val, (int, float)):
+                    if k == "temp":
+                        lbl.configure(text=f"{val:.1f}")
+                    elif k == "power":
+                        lbl.configure(text=f"{val:.1f}")  # Мощность выводим с одним знаком после запятой
+                    else:
+                        lbl.configure(text=f"{val:.2f}")
                 else:
                     lbl.configure(text=f"{val:.0f}" if isinstance(val, (int, float)) else str(val))
 
