@@ -1,20 +1,3 @@
-"""
-Motor Test Stand — настольное приложение (Windows .exe через PyInstaller)
-============================================================================
-Исправлено:
-1. Добавлен ползунок (Slider) для плавной настройки скорости/шага разгона мотора.
-2. Сохранение CSV открывает диалоговое окно Windows (выбор любой папки).
-3. Добавлен счетчик шагов для прореживания точек на графике (раз в 10 шагов).
-4. Добавлено армирование ESC перед разгоном (устраняет бросок тока / срабатывание защиты БП).
-5. Кнопка "Обновить" (перезапуск приложения) УБРАНА — работала нестабильно
-   и роняла приложение, а не переживает переработку без явной пользы.
-6. Прогрессивный (экспоненциальный) разгон газа убран обратно на линейный шаг 1 мкс ШИМ:
-   на крупных скачках PWM в конце экспоненциальной кривой телеметрия RPM/тахометр
-   не успевали посчитать обороты между соседними точками.
-7. Добавлена кнопка отложенного старта — ползунок задержки от 1 сек до 1 минуты,
-   обычная кнопка "НАЧАТЬ ИСПЫТАНИЯ" никуда не делась и работает как раньше.
-"""
-
 import sys
 import os
 import json
@@ -47,7 +30,7 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Стенд тестирования моторов")
-        self.geometry("900x720")  # Слегка увеличили высоту для ползунка
+        self.geometry("950x720")  # Слегка увеличили ширину, чтобы 5 датчиков встали красиво в ряд
 
         self.serial_port = None
         self.reader_thread = None
@@ -66,8 +49,9 @@ class App(ctk.CTk):
         self.delayed_start_pending = False
         self.delayed_start_after_id = None
 
+        # Добавлено поле "temp" для записи температуры в историю и сохранения в CSV
         self.data = {"t": [], "pwm": [], "throttle_pct": [], "rpm": [],
-                     "voltage": [], "current_a": [], "thrust": []}
+                     "voltage": [], "current_a": [], "thrust": [], "temp": []}
 
         self._build_ui()
         self._refresh_ports()
@@ -112,13 +96,13 @@ class App(ctk.CTk):
                                            font=ctk.CTkFont(size=30, weight="bold"))
         self.label_throttle.pack(pady=4)
 
-        # Панель приборов
+        # Панель приборов (Добавлен датчик "temp" для отображения температуры в °C)
         stats = ctk.CTkFrame(self)
         stats.pack(fill="x", padx=16, pady=8)
         self.stat_labels = {}
         for i, (key, title) in enumerate([
             ("rpm", "RPM"), ("voltage", "Вольты (В)"),
-            ("current_a", "Ампер (А)"), ("thrust", "Тяга")
+            ("current_a", "Ампер (А)"), ("temp", "Темп. (°C)"), ("thrust", "Тяга")
         ]):
             f = ctk.CTkFrame(stats)
             f.grid(row=0, column=i, padx=8, pady=8, sticky="nsew")
@@ -148,7 +132,7 @@ class App(ctk.CTk):
         delayed_frame.pack(fill="x", padx=16, pady=(0, 8))
 
         self.label_delayed_slider = ctk.CTkLabel(delayed_frame, text="Задержка старта: 5 с",
-                                                  font=ctk.CTkFont(size=12))
+                                                 font=ctk.CTkFont(size=12))
         self.label_delayed_slider.pack(pady=(6, 0))
 
         self.delayed_slider = ctk.CTkSlider(delayed_frame, from_=1, to=60, number_of_steps=59,
@@ -494,8 +478,8 @@ class App(ctk.CTk):
         for k, lbl in self.stat_labels.items():
             if k in obj:
                 val = obj[k]
-                if k in ("voltage", "current_a") and isinstance(val, (int, float)):
-                    lbl.configure(text=f"{val:.2f}")
+                if k in ("voltage", "current_a", "temp") and isinstance(val, (int, float)):
+                    lbl.configure(text=f"{val:.2f}" if k != "temp" else f"{val:.1f}")
                 else:
                     lbl.configure(text=f"{val:.0f}" if isinstance(val, (int, float)) else str(val))
 
