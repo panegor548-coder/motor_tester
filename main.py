@@ -30,7 +30,7 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Стенд тестирования моторов")
-        self.geometry("1100x720")  # Увеличили ширину, чтобы 6 датчиков красиво встали в ряд
+        self.geometry("1100x760")  # Немного увеличили высоту для удобного размещения 6 графиков
 
         self.serial_port = None
         self.reader_thread = None
@@ -151,14 +151,17 @@ class App(ctk.CTk):
                                      state="disabled")
         self.btn_csv.pack(pady=(0, 8))
 
-        # Графики
-        self.fig = Figure(figsize=(8, 4.5), dpi=100, facecolor="#1e1e1e")
-        self.axs = self.fig.subplots(2, 2)
+        # Графики: изменили сетку с (2, 2) на (2, 3), увеличили ширину под 6 штук
+        self.fig = Figure(figsize=(10, 4.5), dpi=100, facecolor="#1e1e1e")
+        self.axs = self.fig.subplots(2, 3)  # Сетка 2 строки и 3 колонки
+        
+        # Применяем стили ко всем 6 графикам
         for ax in self.axs.flat:
             ax.set_facecolor("#1e1e1e")
             ax.tick_params(colors="white", labelsize=8)
             for spine in ax.spines.values():
                 spine.set_color("white")
+                
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=16, pady=(0, 8))
 
@@ -473,11 +476,16 @@ class App(ctk.CTk):
 
     def _update_chart(self):
         x = self.data["throttle_pct"]
+        # Настраиваем отображение 6 графиков по ячейкам (строка, колонка)
         plots = [
+            # 1-я строка
             (self.axs[0, 0], self.data["voltage"], "Напряжение (В)", "#ffb84f"),
             (self.axs[0, 1], self.data["current_a"], "Ток (А)", "#ff4d4f"),
+            (self.axs[0, 2], self.data["power"], "Мощность (Вт)", "#e84393"),  # Новый график мощности (розовый)
+            # 2-я строка
             (self.axs[1, 0], self.data["thrust"], "Тяга", "#4fff8f"),
             (self.axs[1, 1], self.data["rpm"], "Обороты (RPM)", "#4f9dff"),
+            (self.axs[1, 2], self.data["temp"], "Темп. (°C)", "#00cec9"),     # Новый график температуры (бирюзовый)
         ]
         for ax, y, title, color in plots:
             ax.clear()
