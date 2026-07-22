@@ -42,12 +42,14 @@ class App(ctk.CTk):
         # Переменные для разгона
         self.current_pwm = 1000
         self.current_pct = 0
-        self.step_counter = 0
         self.test_thread = None
         self.ramp_delay = 0.3  # Значение задержки по умолчанию (300 мс)
         self.arm_delay = 2.0   # Время удержания на минимальном газу перед разгоном (сек)
         self.delayed_start_pending = False
         self.delayed_start_after_id = None
+
+        # Хранение последнего известного значения температуры (чтобы избежать нулей)
+        self.last_known_temp = 0.0
 
         self.data = {"t": [], "pwm": [], "throttle_pct": [], "rpm": [],
                      "voltage": [], "current_a": [], "power": [], "thrust": [], "temp": []}
@@ -268,7 +270,6 @@ class App(ctk.CTk):
         self.is_running = True
         self.current_pwm = 1000
         self.current_pct = 0
-        self.step_counter = 0
 
         self.speed_slider.configure(state="disabled")
         self.delayed_slider.configure(state="disabled")
@@ -351,7 +352,6 @@ class App(ctk.CTk):
 
             self.current_pwm += 1
             self.current_pct = int((self.current_pwm - 1000) / 10)
-            self.step_counter += 1
 
             cmd_str = f"PWM:{self.current_pwm}\n".encode()
             self.tx_queue.put(cmd_str)
@@ -433,27 +433,41 @@ class App(ctk.CTk):
                 self.btn_csv.configure(state="normal")
             return
 
-        # Расчет электрической мощности (P = U * I)
-        u = obj.get("voltage", 0.0)
-        i = obj.get("current_a", 0.0)
-        if isinstance(u, (int, float)) and isinstance(i, (int, float)):
-            obj["power"] = u * i
-        else:
-            obj["power"] = 0.0
+        # --- ОБРАБОТКА ТЕМПЕРАТУРЫ ---
+        temp_val = None
+        for k in ("temp", "temperature", "temp_c", "t_deg"):
+            if k in obj:
+                try:
+                    temp_val = float(obj[k])
+                    break
+                except (ValueError, TypeError):
+                    pass
 
-        # Маппинг времени (если со стенда идет ms)
+        # Если значение пришло — запоминаем его, если нет — используем последнее
+        if temp_val is not None:
+            self.last_known_temp = temp_val
+
+        obj["temp"] = self.last_known_temp
+
+        # Расчет электрической мощности (P = U * I)
+        u = float(obj.get("voltage", 0.0))
+        i = float(obj.get("current_a", 0.0))
+        obj["power"] = u * i
+
+        # Маппинг времени
         if "ms" in obj and "t" not in obj:
             obj["t"] = obj["ms"] / 1000.0
+        elif "t" not in obj:
+            obj["t"] = time.time()
 
         obj['pwm'] = self.current_pwm
         obj['throttle_pct'] = self.current_pct
 
-        # Фиксация данных
-        if self.step_counter >= 10 or not self.is_running:
+        # Сохранение данных при запущенном тесте
+        if self.is_running:
             for k in self.data:
                 val = obj.get(k, 0.0)
                 self.data[k].append(val)
-            self.step_counter = 0
             self._update_chart()
 
         # Обновление UI
@@ -461,7 +475,7 @@ class App(ctk.CTk):
             text=f"Газ: {self.current_pct}% (PWM: {self.current_pwm} мкс)"
         )
         
-        # Обновляем все значения напрямую из obj
+        # Обновляем виджеты панелей
         for k, lbl in self.stat_labels.items():
             if k in obj:
                 val = obj[k]
@@ -485,7 +499,7 @@ class App(ctk.CTk):
         ]
         for ax, y, title, color in plots:
             ax.clear()
-            if len(x) == len(y):
+            if len(x) == len(y) and len(x) > 0:
                 ax.plot(x, y, color=color, marker="o", markersize=3)
             ax.set_title(title, color="white", fontsize=10)
             ax.set_facecolor("#1e1e1e")
