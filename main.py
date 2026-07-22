@@ -30,7 +30,7 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Стенд тестирования моторов")
-        self.geometry("1100x760")  # Немного увеличили высоту для удобного размещения 6 графиков
+        self.geometry("1100x760")
 
         self.serial_port = None
         self.reader_thread = None
@@ -49,7 +49,6 @@ class App(ctk.CTk):
         self.delayed_start_pending = False
         self.delayed_start_after_id = None
 
-        # Добавлено поле "power" для расчета и записи мощности в историю и сохранения в CSV
         self.data = {"t": [], "pwm": [], "throttle_pct": [], "rpm": [],
                      "voltage": [], "current_a": [], "power": [], "thrust": [], "temp": []}
 
@@ -86,17 +85,15 @@ class App(ctk.CTk):
 
         self.speed_slider = ctk.CTkSlider(slider_frame, from_=50, to=1000, number_of_steps=19,
                                           command=self._on_slider_move)
-        self.speed_slider.set(300)  # Ставим ползунок на 300 мс по умолчанию
+        self.speed_slider.set(300)
         self.speed_slider.pack(fill="x", padx=20, pady=(0, 6))
-        # Синхронизируем self.ramp_delay с реальным положением ползунка сразу при старте
         self._on_slider_move(self.speed_slider.get())
-        # --------------------------------------
 
         self.label_throttle = ctk.CTkLabel(self, text="Газ: 0% (PWM: — мкс)",
                                            font=ctk.CTkFont(size=30, weight="bold"))
         self.label_throttle.pack(pady=4)
 
-        # Панель приборов (Добавлен датчик "power" для отображения мощности в Вт)
+        # Панель приборов
         stats = ctk.CTkFrame(self)
         stats.pack(fill="x", padx=16, pady=8)
         self.stat_labels = {}
@@ -151,11 +148,10 @@ class App(ctk.CTk):
                                      state="disabled")
         self.btn_csv.pack(pady=(0, 8))
 
-        # Графики: изменили сетку с (2, 2) на (2, 3), увеличили ширину под 6 штук
+        # Графики
         self.fig = Figure(figsize=(10, 4.5), dpi=100, facecolor="#1e1e1e")
-        self.axs = self.fig.subplots(2, 3)  # Сетка 2 строки и 3 колонки
+        self.axs = self.fig.subplots(2, 3)
         
-        # Применяем стили ко всем 6 графикам
         for ax in self.axs.flat:
             ax.set_facecolor("#1e1e1e")
             ax.tick_params(colors="white", labelsize=8)
@@ -437,38 +433,41 @@ class App(ctk.CTk):
                 self.btn_csv.configure(state="normal")
             return
 
-        # Расчитываем электрическую мощность на лету (P = U * I)
-        if "voltage" in obj and "current_a" in obj:
-            u = obj["voltage"]
-            i = obj["current_a"]
-            if isinstance(u, (int, float)) and isinstance(i, (int, float)):
-                obj["power"] = u * i
-            else:
-                obj["power"] = 0.0
+        # Расчет электрической мощности (P = U * I)
+        u = obj.get("voltage", 0.0)
+        i = obj.get("current_a", 0.0)
+        if isinstance(u, (int, float)) and isinstance(i, (int, float)):
+            obj["power"] = u * i
         else:
             obj["power"] = 0.0
+
+        # Маппинг времени (если со стенда идет ms)
+        if "ms" in obj and "t" not in obj:
+            obj["t"] = obj["ms"] / 1000.0
 
         obj['pwm'] = self.current_pwm
         obj['throttle_pct'] = self.current_pct
 
+        # Фиксация данных
         if self.step_counter >= 10 or not self.is_running:
             for k in self.data:
-                if k in obj:
-                    self.data[k].append(obj[k])
+                val = obj.get(k, 0.0)
+                self.data[k].append(val)
             self.step_counter = 0
             self._update_chart()
 
+        # Обновление UI
         self.label_throttle.configure(
             text=f"Газ: {self.current_pct}% (PWM: {self.current_pwm} мкс)"
         )
+        
+        # Обновляем все значения напрямую из obj
         for k, lbl in self.stat_labels.items():
             if k in obj:
                 val = obj[k]
                 if k in ("voltage", "current_a", "power", "temp") and isinstance(val, (int, float)):
-                    if k == "temp":
+                    if k in ("temp", "power"):
                         lbl.configure(text=f"{val:.1f}")
-                    elif k == "power":
-                        lbl.configure(text=f"{val:.1f}")  # Мощность выводим с одним знаком после запятой
                     else:
                         lbl.configure(text=f"{val:.2f}")
                 else:
@@ -476,20 +475,18 @@ class App(ctk.CTk):
 
     def _update_chart(self):
         x = self.data["throttle_pct"]
-        # Настраиваем отображение 6 графиков по ячейкам (строка, колонка)
         plots = [
-            # 1-я строка
             (self.axs[0, 0], self.data["voltage"], "Напряжение (В)", "#ffb84f"),
             (self.axs[0, 1], self.data["current_a"], "Ток (А)", "#ff4d4f"),
-            (self.axs[0, 2], self.data["power"], "Мощность (Вт)", "#e84393"),  # Новый график мощности (розовый)
-            # 2-я строка
+            (self.axs[0, 2], self.data["power"], "Мощность (Вт)", "#e84393"),
             (self.axs[1, 0], self.data["thrust"], "Тяга", "#4fff8f"),
             (self.axs[1, 1], self.data["rpm"], "Обороты (RPM)", "#4f9dff"),
-            (self.axs[1, 2], self.data["temp"], "Темп. (°C)", "#00cec9"),     # Новый график температуры (бирюзовый)
+            (self.axs[1, 2], self.data["temp"], "Темп. (°C)", "#00cec9"),
         ]
         for ax, y, title, color in plots:
             ax.clear()
-            ax.plot(x, y, color=color, marker="o", markersize=3)
+            if len(x) == len(y):
+                ax.plot(x, y, color=color, marker="o", markersize=3)
             ax.set_title(title, color="white", fontsize=10)
             ax.set_facecolor("#1e1e1e")
             ax.tick_params(colors="white", labelsize=8)
