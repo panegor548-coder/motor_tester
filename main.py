@@ -463,7 +463,7 @@ class App(ctk.CTk):
         obj['pwm'] = self.current_pwm
         obj['throttle_pct'] = self.current_pct
 
-        # Сохранение данных при запущенном тесте
+        # Сохранение данных при запущенном тесте (записывается каждый входящий пакет)
         if self.is_running:
             for k in self.data:
                 val = obj.get(k, 0.0)
