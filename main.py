@@ -24,13 +24,14 @@ ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 BAUD_RATE = 115200
+VOLTAGE_CONST = 24.4  # Константное напряжение (В)
 
 
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Стенд тестирования моторов")
-        self.geometry("1100x760")
+        self.geometry("1100x890")
 
         self.serial_port = None
         self.reader_thread = None
@@ -39,7 +40,7 @@ class App(ctk.CTk):
         self.tx_queue = queue.Queue()
         self.is_running = False
 
-        # Переменные для разгона
+        # Переменные для разгона и газа
         self.current_pwm = 1000
         self.current_pct = 0
         self.test_thread = None
@@ -48,7 +49,10 @@ class App(ctk.CTk):
         self.delayed_start_pending = False
         self.delayed_start_after_id = None
 
-        # Хранение последнего известного значения температуры (чтобы избежать нулей)
+        # Защита от частой отправки команд с ползунка (debounce)
+        self.last_manual_pwm_time = 0.0
+
+        # Хранение последнего известного значения температуры
         self.last_known_temp = 0.0
 
         self.data = {"t": [], "pwm": [], "throttle_pct": [], "rpm": [],
@@ -77,7 +81,7 @@ class App(ctk.CTk):
                                          font=ctk.CTkFont(size=14, weight="bold"))
         self.label_status.pack(pady=(4, 8))
 
-        # --- НАСТРОЙКА ПЛАВНОСТИ (ПОЛЗУНОК) ---
+        # --- НАСТРОЙКА ПЛАВНОСТИ (ПОЛЗУНОК АВТО-РАЗГОНА) ---
         slider_frame = ctk.CTkFrame(self)
         slider_frame.pack(fill="x", padx=16, pady=4)
 
@@ -89,11 +93,32 @@ class App(ctk.CTk):
                                           command=self._on_slider_move)
         self.speed_slider.set(300)
         self.speed_slider.pack(fill="x", padx=20, pady=(0, 6))
-        self._on_slider_move(self.speed_slider.get())
 
-        self.label_throttle = ctk.CTkLabel(self, text="Газ: 0% (PWM: — мкс)",
+        self.label_throttle = ctk.CTkLabel(self, text="Газ: 0% (PWM: 1000 мкс)",
                                            font=ctk.CTkFont(size=30, weight="bold"))
         self.label_throttle.pack(pady=4)
+
+        # --- РУЧНОЕ УПРАВЛЕНИЕ ГАЗОМ И ОХЛАЖДЕНИЕ ---
+        manual_frame = ctk.CTkFrame(self)
+        manual_frame.pack(fill="x", padx=16, pady=4)
+
+        self.label_manual_pwm = ctk.CTkLabel(manual_frame, text="Ручная регулировка газа (1000 — 2000 мкс):",
+                                             font=ctk.CTkFont(size=12, weight="bold"))
+        self.label_manual_pwm.pack(pady=(4, 0))
+
+        manual_inner_frame = ctk.CTkFrame(manual_frame, fg_color="transparent")
+        manual_inner_frame.pack(fill="x", padx=10, pady=4)
+
+        self.pwm_slider = ctk.CTkSlider(manual_inner_frame, from_=1000, to=2000, number_of_steps=200,
+                                        command=self._on_pwm_slider_move, state="disabled")
+        self.pwm_slider.set(1000)
+        self.pwm_slider.pack(side="left", expand=True, fill="x", padx=(10, 10))
+
+        self.btn_cool = ctk.CTkButton(manual_inner_frame, text="ОХЛАЖДЕНИЕ (10%)",
+                                     fg_color="#008080", hover_color="#005656", width=180, height=32,
+                                     font=ctk.CTkFont(size=12, weight="bold"),
+                                     command=self.set_cooling_mode, state="disabled")
+        self.btn_cool.pack(side="right", padx=(0, 10))
 
         # Панель приборов
         stats = ctk.CTkFrame(self)
@@ -121,9 +146,9 @@ class App(ctk.CTk):
         self.btn_start.pack(side="left", expand=True, fill="x", padx=(0, 8))
 
         self.btn_stop = ctk.CTkButton(btns, text="АВАРИЙНЫЙ СТОП", fg_color="red",
-                                      hover_color="darkred", height=50,
-                                      font=ctk.CTkFont(size=16, weight="bold"),
-                                      command=self.emergency_stop, state="disabled")
+                                     hover_color="darkred", height=50,
+                                     font=ctk.CTkFont(size=16, weight="bold"),
+                                     command=self.emergency_stop, state="disabled")
         self.btn_stop.pack(side="left", expand=True, fill="x", padx=(8, 0))
 
         # --- ОТЛОЖЕННЫЙ СТАРТ ---
@@ -146,19 +171,23 @@ class App(ctk.CTk):
                                                command=self.start_delayed_test, state="disabled")
         self.btn_delayed_start.pack(fill="x", padx=20, pady=(0, 8))
 
-        self.btn_csv = ctk.CTkButton(self, text="Сохранить CSV как...", command=self.export_csv,
+        # --- КНОПКИ CSV И СБРОСА (ПЕРЕЗАПУСКА) ---
+        export_frame = ctk.CTkFrame(self, fg_color="transparent")
+        export_frame.pack(fill="x", padx=16, pady=(0, 8))
+
+        self.btn_csv = ctk.CTkButton(export_frame, text="Сохранить CSV как...", command=self.export_csv,
                                      state="disabled")
-        self.btn_csv.pack(pady=(0, 8))
+        self.btn_csv.pack(side="left", expand=True, fill="x", padx=(0, 4))
+
+        self.btn_reset = ctk.CTkButton(export_frame, text="Сброс / Готовность к новому тесту",
+                                       fg_color="#4a4a4a", hover_color="#333333",
+                                       command=self.reset_app)
+        self.btn_reset.pack(side="right", expand=True, fill="x", padx=(4, 0))
 
         # Графики
         self.fig = Figure(figsize=(10, 4.5), dpi=100, facecolor="#1e1e1e")
         self.axs = self.fig.subplots(2, 3)
-        
-        for ax in self.axs.flat:
-            ax.set_facecolor("#1e1e1e")
-            ax.tick_params(colors="white", labelsize=8)
-            for spine in ax.spines.values():
-                spine.set_color("white")
+        self._draw_empty_charts()
                 
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=16, pady=(0, 8))
@@ -167,6 +196,72 @@ class App(ctk.CTk):
         self.log_box = ctk.CTkTextbox(self, height=80, font=ctk.CTkFont(size=11))
         self.log_box.pack(fill="x", padx=16, pady=(0, 16))
         self.log_box.configure(state="disabled")
+
+    def _draw_empty_charts(self):
+        titles = [
+            ("0,0", "Напряжение (В)"), ("0,1", "Ток (А)"), ("0,2", "Мощность (Вт)"),
+            ("1,0", "Тяга"), ("1,1", "Обороты (RPM)"), ("1,2", "Темп. (°C)")
+        ]
+        idx = 0
+        for r in range(2):
+            for c in range(3):
+                ax = self.axs[r, c]
+                ax.clear()
+                ax.set_facecolor("#1e1e1e")
+                ax.set_title(titles[idx][1], color="white", fontsize=10)
+                ax.tick_params(colors="white", labelsize=8)
+                for spine in ax.spines.values():
+                    spine.set_color("white")
+                idx += 1
+
+    def reset_app(self):
+        """Полный безопасный сброс состояния без зависаний и утечек ресурсов"""
+        self._cancel_delayed_start()
+
+        # Остановка активных потоков
+        self.is_running = False
+        self.current_pwm = 1000
+        self.current_pct = 0
+        self.pwm_slider.set(1000)
+
+        # Отправка команды останова в контроллер
+        if self.serial_port:
+            try:
+                self.tx_queue.put(b"STOP\n")
+            except Exception:
+                pass
+
+        # Безопасная очистка массивов данных
+        for k in self.data:
+            self.data[k].clear()
+
+        # Полный перезапуск холста графиков
+        self._draw_empty_charts()
+        self.canvas.draw_idle()
+
+        # Восстановление показателей приборов
+        for lbl in self.stat_labels.values():
+            lbl.configure(text="0")
+
+        # Настройка кнопок
+        self.label_throttle.configure(text="Газ: 0% (PWM: 1000 мкс)")
+        if self.serial_port:
+            self.label_status.configure(text="Готов к новому испытанию", text_color="lightgreen")
+            self.btn_start.configure(state="normal")
+            self.btn_delayed_start.configure(state="normal")
+            self.pwm_slider.configure(state="normal")
+            self.btn_cool.configure(state="normal")
+        else:
+            self.label_status.configure(text="Не подключено", text_color="orange")
+            self.btn_start.configure(state="disabled")
+            self.btn_delayed_start.configure(state="disabled")
+
+        self.btn_stop.configure(state="disabled")
+        self.speed_slider.configure(state="normal")
+        self.delayed_slider.configure(state="normal")
+        self.btn_csv.configure(state="disabled")
+
+        self.log("=== ВЫПОЛНЕН СБРОС: Приложение готово к новому тесту ===")
 
     def _on_slider_move(self, value):
         ms_val = int(value)
@@ -184,6 +279,38 @@ class App(ctk.CTk):
     def _on_delayed_slider_move(self, value):
         sec_val = int(round(value))
         self.label_delayed_slider.configure(text=f"Задержка старта: {sec_val} с")
+
+    def _on_pwm_slider_move(self, value):
+        pwm_val = int(round(value))
+        self.current_pwm = pwm_val
+        self.current_pct = int((pwm_val - 1000) / 10)
+
+        self.label_throttle.configure(
+            text=f"Газ: {self.current_pct}% (PWM: {self.current_pwm} мкс)"
+        )
+
+        now = time.time()
+        if now - self.last_manual_pwm_time > 0.03:
+            self.last_manual_pwm_time = now
+            if self.serial_port:
+                self.tx_queue.put(f"PWM:{pwm_val}\n".encode())
+
+    def set_cooling_mode(self):
+        if not self.serial_port or self.is_running:
+            return
+
+        cool_pwm = 1100
+        self.current_pwm = cool_pwm
+        self.current_pct = 10
+        self.pwm_slider.set(cool_pwm)
+
+        self.label_throttle.configure(
+            text=f"Газ: {self.current_pct}% (PWM: {self.current_pwm} мкс)"
+        )
+        self.label_status.configure(text="Режим охлаждения (10% газа)", text_color="cyan")
+        self.log("Включен холостой ход / охлаждение (10% газа)")
+
+        self.tx_queue.put(b"IDLE\n")
 
     def log(self, msg):
         self.log_box.configure(state="normal")
@@ -230,16 +357,18 @@ class App(ctk.CTk):
             try:
                 while True:
                     cmd = self.tx_queue.get_nowait()
-                    self.serial_port.write(cmd)
+                    if self.serial_port and self.serial_port.is_open:
+                        self.serial_port.write(cmd)
             except queue.Empty:
                 pass
             except Exception as e:
                 self.rx_queue.put(json.dumps({"__io_error__": f"запись: {e}"}))
 
             try:
-                line = self.serial_port.readline().decode("utf-8", errors="ignore").strip()
-                if line:
-                    self.rx_queue.put(line)
+                if self.serial_port and self.serial_port.is_open:
+                    line = self.serial_port.readline().decode("utf-8", errors="ignore").strip()
+                    if line:
+                        self.rx_queue.put(line)
             except Exception as e:
                 self.rx_queue.put(json.dumps({"__io_error__": f"чтение: {e}"}))
                 break
@@ -270,10 +399,13 @@ class App(ctk.CTk):
         self.is_running = True
         self.current_pwm = 1000
         self.current_pct = 0
+        self.pwm_slider.set(1000)
 
         self.speed_slider.configure(state="disabled")
         self.delayed_slider.configure(state="disabled")
         self.btn_delayed_start.configure(state="disabled")
+        self.pwm_slider.configure(state="disabled")
+        self.btn_cool.configure(state="disabled")
 
         self.label_status.configure(text="Армирование ESC...", text_color="yellow")
         self.log(f"Запуск теста. Армирование {self.arm_delay:.1f} с на минимальном газу, "
@@ -295,6 +427,8 @@ class App(ctk.CTk):
         self.btn_delayed_start.configure(state="disabled")
         self.delayed_slider.configure(state="disabled")
         self.speed_slider.configure(state="disabled")
+        self.pwm_slider.configure(state="disabled")
+        self.btn_cool.configure(state="disabled")
         self.btn_stop.configure(state="normal")
 
         self.log(f"Отложенный старт: тест начнётся через {delay_sec} с")
@@ -329,6 +463,8 @@ class App(ctk.CTk):
         self.btn_stop.configure(state="disabled")
         self.speed_slider.configure(state="normal")
         self.delayed_slider.configure(state="normal")
+        self.pwm_slider.configure(state="normal")
+        self.btn_cool.configure(state="normal")
         return True
 
     def _smooth_ramp_worker(self):
@@ -366,6 +502,10 @@ class App(ctk.CTk):
             return
 
         self.is_running = False
+        self.current_pwm = 1000
+        self.current_pct = 0
+        self.pwm_slider.set(1000)
+
         if self.serial_port:
             self.tx_queue.put(b"STOP\n")
         self.label_status.configure(text="ТЕСТ ПРИНУДИТЕЛЬНО ПРЕРВАН", text_color="red")
@@ -374,6 +514,8 @@ class App(ctk.CTk):
         self.speed_slider.configure(state="normal")
         self.delayed_slider.configure(state="normal")
         self.btn_delayed_start.configure(state="normal")
+        self.pwm_slider.configure(state="normal")
+        self.btn_cool.configure(state="normal")
 
     def _handle_line(self, line):
         try:
@@ -386,6 +528,8 @@ class App(ctk.CTk):
             self.label_status.configure(text=f"Подключено: {obj['port']}", text_color="lightgreen")
             self.btn_start.configure(state="normal")
             self.btn_delayed_start.configure(state="normal")
+            self.pwm_slider.configure(state="normal")
+            self.btn_cool.configure(state="normal")
             self.log(f"Порт {obj['port']} открыт")
             return
 
@@ -415,6 +559,9 @@ class App(ctk.CTk):
             if status == "RAMPING":
                 self.label_status.configure(text="Идёт плавный разгон...", text_color="yellow")
                 return
+            if status == "COOLING_IDLE":
+                self.label_status.configure(text="Охлаждение: 10% газа", text_color="cyan")
+                return
 
             if status == "DONE":
                 self.label_status.configure(text="Тест успешно завершён", text_color="lightgreen")
@@ -429,6 +576,8 @@ class App(ctk.CTk):
             self.speed_slider.configure(state="normal")
             self.delayed_slider.configure(state="normal")
             self.btn_delayed_start.configure(state="normal")
+            self.pwm_slider.configure(state="normal")
+            self.btn_cool.configure(state="normal")
             if self.data["t"]:
                 self.btn_csv.configure(state="normal")
             return
@@ -443,15 +592,20 @@ class App(ctk.CTk):
                 except (ValueError, TypeError):
                     pass
 
-        # Если значение пришло — запоминаем его, если нет — используем последнее
         if temp_val is not None:
             self.last_known_temp = temp_val
 
         obj["temp"] = self.last_known_temp
 
-        # Расчет электрической мощности (P = U * I)
-        u = float(obj.get("voltage", 0.0))
-        i = float(obj.get("current_a", 0.0))
+        # --- НАПРЯЖЕНИЕ И МОЩНОСТЬ (P = U * I) ---
+        u = VOLTAGE_CONST
+        obj["voltage"] = u
+
+        try:
+            i = float(obj.get("current_a", 0.0))
+        except (ValueError, TypeError):
+            i = 0.0
+
         obj["power"] = u * i
 
         # Маппинг времени
@@ -460,22 +614,23 @@ class App(ctk.CTk):
         elif "t" not in obj:
             obj["t"] = time.time()
 
+        if "pwm" in obj and not self.is_running:
+            self.current_pwm = int(obj["pwm"])
+            self.current_pct = int((self.current_pwm - 1000) / 10)
+
         obj['pwm'] = self.current_pwm
         obj['throttle_pct'] = self.current_pct
 
-        # Сохранение данных при запущенном тесте (записывается каждый входящий пакет)
         if self.is_running:
             for k in self.data:
                 val = obj.get(k, 0.0)
                 self.data[k].append(val)
             self._update_chart()
 
-        # Обновление UI
         self.label_throttle.configure(
             text=f"Газ: {self.current_pct}% (PWM: {self.current_pwm} мкс)"
         )
-        
-        # Обновляем виджеты панелей
+
         for k, lbl in self.stat_labels.items():
             if k in obj:
                 val = obj[k]
@@ -498,18 +653,19 @@ class App(ctk.CTk):
             (self.axs[1, 2], self.data["temp"], "Темп. (°C)", "#00cec9"),
         ]
         for ax, y, title, color in plots:
-            ax.clear()
             if len(x) == len(y) and len(x) > 0:
+                ax.clear()
                 ax.plot(x, y, color=color, marker="o", markersize=3)
-            ax.set_title(title, color="white", fontsize=10)
-            ax.set_facecolor("#1e1e1e")
-            ax.tick_params(colors="white", labelsize=8)
-            for spine in ax.spines.values():
-                spine.set_color("white")
+                ax.set_title(title, color="white", fontsize=10)
+                ax.set_facecolor("#1e1e1e")
+                ax.tick_params(colors="white", labelsize=8)
+                for spine in ax.spines.values():
+                    spine.set_color("white")
         self.canvas.draw_idle()
 
     def export_csv(self):
         if not self.data["t"]:
+            self.log("Нет данных для сохранения")
             return
 
         default_filename = f"motor_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
@@ -527,17 +683,19 @@ class App(ctk.CTk):
 
         try:
             keys = list(self.data.keys())
-            with open(filepath, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
+            min_len = min(len(self.data[k]) for k in keys)
+
+            with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f, delimiter=";")
                 writer.writerow(keys)
-                for i in range(len(self.data["t"])):
+                for i in range(min_len):
                     writer.writerow([self.data[k][i] for k in keys])
 
             just_name = os.path.basename(filepath)
             self.label_status.configure(text=f"Сохранено: {just_name}", text_color="lightgreen")
             self.log(f"Файл успешно сохранен в: {filepath}")
         except Exception as e:
-            self.log(f"Ошибка записи файла: {e}")
+            self.log(f"Ошибка записи файла: {e}\n{traceback.format_exc()}")
             self.label_status.configure(text="Ошибка при сохранении файла!", text_color="red")
 
 
