@@ -468,19 +468,20 @@ class App(ctk.CTk):
         return True
 
     def _smooth_ramp_worker(self):
-        self.tx_queue.put(b"START\n")
-        self.tx_queue.put(f"PWM:{self.current_pwm}\n".encode())
+        # 1. АКТИВНОЕ АРМИРОВАНИЕ: посылаем PWM:1000 каждые 100 мс без неизвестных команд
         self.rx_queue.put(json.dumps({"status": "ARMING"}))
-
         armed_until = time.time() + self.arm_delay
+        
         while self.is_running and time.time() < armed_until:
-            time.sleep(0.05)
+            self.tx_queue.put(b"PWM:1000\n")
+            time.sleep(0.1)
 
         if not self.is_running:
             return
 
         self.rx_queue.put(json.dumps({"status": "RAMPING"}))
 
+        # 2. ПЛАВНЫЙ РАЗГОН: шаг +1 мкс (без изменений)
         while self.is_running and self.current_pwm < 2000:
             time.sleep(self.ramp_delay)
             if not self.is_running:
@@ -492,6 +493,7 @@ class App(ctk.CTk):
             cmd_str = f"PWM:{self.current_pwm}\n".encode()
             self.tx_queue.put(cmd_str)
 
+        # 3. ЗАВЕРШЕНИЕ: сброс в 1000 мкс
         if self.is_running and self.current_pwm >= 2000:
             self.is_running = False
             self.tx_queue.put(b"STOP\n")
@@ -702,3 +704,4 @@ class App(ctk.CTk):
 if __name__ == "__main__":
     app = App()
     app.mainloop()
+
